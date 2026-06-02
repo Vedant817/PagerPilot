@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PagerPilot - AI SRE Investigator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="glow-bg">
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+    <div class="glow-orb orb-3"></div>
+  </div>
+  <header class="header">
+    <div class="container">
+      <h1>PagerPilot</h1>
+      <p class="subtitle">AI SRE Incident Investigator</p>
+      <div class="header-badge">
+        <span class="badge badge-coral">CoralOS</span>
+        <span class="badge badge-agent">Multi-Agent</span>
+        <span class="badge badge-source">4 Sources</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="control-panel">
+      <div class="panel-header">
+        <h2>Incident Investigation</h2>
+        <span class="status-dot" id="statusDot"></span>
+        <span id="statusText" class="status-text">Ready</span>
+      </div>
+
+      <div class="incident-selector">
+        <label for="incidentSelect">Select an incident to investigate:</label>
+        <div class="selector-row">
+          <select id="incidentSelect" class="select-input">
+            <option value="">-- Choose incident --</option>
+          </select>
+          <button id="investigateBtn" class="btn btn-primary" disabled>
+            Investigate
+          </button>
+        </div>
+      </div>
+
+      <div class="session-info" id="sessionInfo" style="display:none;">
+        <div class="info-row">
+          <span class="info-label">Session:</span>
+          <code id="sessionId">-</code>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Status:</span>
+          <span id="sessionStatus" class="status-badge">-</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="agent-graph" id="agentGraph" style="display:none;">
+      <h3>Agent Pipeline</h3>
+      <div class="graph-flow">
+        <div class="graph-node" id="node-router">
+          <div class="node-icon">📡</div>
+          <div class="node-label">Router</div>
+          <div class="node-status" id="status-router">⏳</div>
+        </div>
+        <div class="graph-arrow">→</div>
+        <div class="graph-node" id="node-source_fetch">
+          <div class="node-icon">🔍</div>
+          <div class="node-label">Source Fetch</div>
+          <div class="node-status" id="status-source_fetch">⏳</div>
+        </div>
+        <div class="graph-arrow">→</div>
+        <div class="graph-node" id="node-analyst">
+          <div class="node-icon">🧠</div>
+          <div class="node-label">Analyst</div>
+          <div class="node-status" id="status-analyst">⏳</div>
+        </div>
+        <div class="graph-arrow">→</div>
+        <div class="graph-node" id="node-reporter">
+          <div class="node-icon">📋</div>
+          <div class="node-label">Reporter</div>
+          <div class="node-status" id="status-reporter">⏳</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="logs-panel" id="logsPanel" style="display:none;">
+      <h3>Session Log</h3>
+      <div class="log-container" id="logContainer">
+        <div class="log-empty">Waiting for investigation...</div>
+      </div>
+    </section>
+
+    <section class="brief-panel" id="briefPanel" style="display:none;">
+      <div class="brief-header">
+        <h2>Incident Brief</h2>
+        <span class="confidence-badge" id="confidenceBadge">-</span>
+      </div>
+
+      <div class="brief-meta" id="briefMeta">
+        <div class="meta-item">
+          <span class="meta-label">Incident</span>
+          <span class="meta-value" id="briefId">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Service</span>
+          <span class="meta-value" id="briefService">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Severity</span>
+          <span class="meta-value" id="briefSeverity">-</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Status</span>
+          <span class="meta-value" id="briefStatus">-</span>
+        </div>
+      </div>
+
+      <div class="brief-section">
+        <h4>Executive Summary</h4>
+        <div id="briefSummary" class="brief-content"></div>
+      </div>
+
+      <div class="brief-section">
+        <h4>Timeline</h4>
+        <div id="briefTimeline" class="timeline-container"></div>
+      </div>
+
+      <div class="brief-section">
+        <h4>Root Cause Hypotheses</h4>
+        <div id="briefHypotheses" class="hypotheses-container"></div>
+      </div>
+
+      <div class="brief-section">
+        <h4>Recommended Action</h4>
+        <div id="briefAction" class="action-container"></div>
+      </div>
+
+      <div class="brief-section">
+        <h4>Blast Radius & Service Impact</h4>
+        <div id="briefImpact" class="impact-container"></div>
+      </div>
+
+      <div class="brief-section">
+        <h4>Evidence Sources</h4>
+        <div id="briefSources" class="sources-container"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>PagerPilot - AI SRE Investigator powered by CoralOS Multi-Agent Orchestration</p>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

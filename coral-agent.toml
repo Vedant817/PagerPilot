@@ -1,0 +1,57 @@
+edition = 4
+
+[agent]
+name = "pagerpilot-sre-investigator"
+version = "1.0.0"
+description = "Multi-agent incident investigator that correlates PagerDuty, Datadog, GitHub, and StatusGator signals into a single trusted incident brief with root-cause hypotheses."
+
+[llm]
+provider = "openai"
+model = "gpt-4o"
+temperature = 0.1
+max_tokens = 4096
+
+[options.PAGERDUTY_API_KEY]
+type = "string"
+required = true
+secret = true
+display.description = "PagerDuty API token for reading incidents"
+
+[options.DATADOG_API_KEY]
+type = "string"
+required = true
+secret = true
+display.description = "Datadog API key for querying metrics and alerts"
+
+[options.DATADOG_APP_KEY]
+type = "string"
+required = true
+secret = true
+display.description = "Datadog application key"
+
+[options.GITHUB_TOKEN]
+type = "string"
+required = true
+secret = true
+display.description = "GitHub personal access token for reading repos"
+
+[options.STATUSGATOR_API_KEY]
+type = "string"
+required = false
+secret = true
+display.description = "StatusGator API key (optional)"
+
+[options.INCIDENT_NAMESPACE]
+type = "string"
+required = false
+default = "default"
+display.description = "Coral namespace for sessions"
+
+[runtimes.docker]
+image = "pagerpilot/sre-investigator"
+transport = "streamable_http"
+
+[runtimes.executable]
+path = "bash"
+arguments = ["-c", "cd /app && python -m backend"]
+transport = "streamable_http"
