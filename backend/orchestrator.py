@@ -49,10 +49,12 @@ class AgentGraph:
                     return {
                         "session_id": session.id,
                         "status": "failed",
+                        "incident_id": incident_id,
                         "stage": stage_name,
                         "error": result.error,
                         "results": results,
                         "logs": session.logs,
+                        "fetch_errors": session.context.get("fetch_errors", []),
                     }
                 session.add_log(agent.name, "Agent completed")
             except Exception as e:
@@ -62,10 +64,12 @@ class AgentGraph:
                 return {
                     "session_id": session.id,
                     "status": "failed",
+                    "incident_id": incident_id,
                     "stage": stage_name,
                     "error": str(e),
                     "results": results,
                     "logs": session.logs,
+                    "fetch_errors": session.context.get("fetch_errors", []),
                 }
 
         session.status = "completed"
@@ -81,4 +85,5 @@ class AgentGraph:
             "hypotheses": session.context.get("hypotheses"),
             "brief": brief,
             "logs": session.logs,
+            "fetch_errors": session.context.get("fetch_errors", []),
         }

@@ -3,18 +3,24 @@ from typing import Optional
 
 import httpx
 
-from schema.evidence import DatadogMetric, DatadogAlert, Severity
-from .base import NonRetryableError, RetryableError, get_http_client
 from backend.config import (
-    has_datadog, DATADOG_API_KEY, DATADOG_APP_KEY, DATADOG_BASE_URL,
-    DATADOG_METRIC_QUERIES, DATADOG_MONITOR_TAGS,
+    DATADOG_API_KEY,
+    DATADOG_APP_KEY,
+    DATADOG_BASE_URL,
+    DATADOG_MONITOR_TAGS,
+    has_datadog,
+    metric_queries_for_service,
 )
+from backend.timeutils import to_utc_iso
+from schema.evidence import DatadogAlert, DatadogMetric, Severity
+from .base import NonRetryableError, RetryableError, get_http_client
 
 logger = logging.getLogger(__name__)
 
 SEVERITY_MAP: dict[str, Severity] = {
     "Alert": Severity.CRITICAL,
     "Warning": Severity.HIGH,
+    "No Data": Severity.HIGH,
     "Info": Severity.MEDIUM,
     "None": Severity.INFO,
 }
@@ -31,23 +37,27 @@ async def get_service_metrics(service: str, window: str = "1h") -> list[DatadogM
     if not service:
         raise NonRetryableError("service is required")
     if not has_datadog():
-        logger.warning(f"Datadog not configured, returning empty metrics for {service}")
+        logger.warning("Datadog not configured, returning empty metrics for %s", service)
+        return []
+
+    metric_queries = metric_queries_for_service(service)
+    if not metric_queries:
+        logger.warning("No metric queries configured for service %s", service)
         return []
 
     client = await get_http_client()
-    metric_queries = DATADOG_METRIC_QUERIES.get(service, [])
-    if not metric_queries:
-        logger.warning(f"No metric queries configured for service {service}")
-        return []
-
     results: list[DatadogMetric] = []
     for query in metric_queries:
         try:
             metric = await _query_metric(client, query, service, window)
             if metric:
                 results.append(metric)
+        except RetryableError:
+            raise
+        except NonRetryableError:
+            raise
         except Exception as e:
-            logger.warning(f"Failed to query Datadog metric '{query}' for {service}: {e}")
+            logger.warning("Failed to query Datadog metric %r for %s: %s", query, service, e)
 
     return results
 
@@ -68,31 +78,35 @@ async def _query_metric(
     resp = await client.get(url, headers=_headers(), params=params)
     if resp.status_code == 429:
         raise RetryableError(f"Datadog rate limited: {resp.text}")
-    if resp.status_code == 403:
+    if resp.status_code in (401, 403):
         raise NonRetryableError(f"Datadog auth failed: {resp.text}")
     resp.raise_for_status()
 
     data = resp.json()
     series = data.get("series", [])
     if not series:
-        logger.debug(f"No series returned for query: {query}")
+        logger.debug("No series returned for query: %s", query)
         return None
 
     points = series[0].get("pointlist", [])
-    if not points:
+    filtered = [float(p[1]) for p in points if len(p) > 1 and p[1] is not None]
+    if not filtered:
         return None
 
-    avg_val = sum(p[1] for p in points if p[1] is not None) / max(len([p for p in points if p[1] is not None]), 1)
+    avg_val = sum(filtered) / len(filtered)
     p99_val = avg_val
-
-    filtered = [p[1] for p in points if p[1] is not None]
     if len(filtered) > 1:
         sorted_vals = sorted(filtered)
         idx = int(len(sorted_vals) * 0.99)
         p99_val = sorted_vals[min(idx, len(sorted_vals) - 1)]
 
-    metric_name = series[0].get("metric", query.split("{")[0].strip())
+    metric_name = series[0].get("metric") or query.split("{")[0].split(":")[-1].strip()
     anomaly = _detect_anomaly(filtered) if len(filtered) > 1 else False
+    unit = series[0].get("unit", "")
+    if isinstance(unit, list) and unit:
+        unit = unit[0].get("short_name") or unit[0].get("name") or ""
+    elif not isinstance(unit, str):
+        unit = str(unit or "")
 
     return DatadogMetric(
         metric_name=metric_name,
@@ -101,7 +115,7 @@ async def _query_metric(
         p99_value=round(p99_val, 2),
         anomaly=anomaly,
         window=window,
-        unit=series[0].get("unit", ""),
+        unit=unit,
     )
 
 
@@ -109,7 +123,7 @@ async def get_service_alerts(service: str) -> list[DatadogAlert]:
     if not service:
         raise NonRetryableError("service is required")
     if not has_datadog():
-        logger.warning(f"Datadog not configured, returning empty alerts for {service}")
+        logger.warning("Datadog not configured, returning empty alerts for %s", service)
         return []
 
     client = await get_http_client()
@@ -122,7 +136,7 @@ async def get_service_alerts(service: str) -> list[DatadogAlert]:
     resp = await client.get(url, headers=_headers(), params=params)
     if resp.status_code == 429:
         raise RetryableError(f"Datadog rate limited: {resp.text}")
-    if resp.status_code == 403:
+    if resp.status_code in (401, 403):
         raise NonRetryableError(f"Datadog auth failed: {resp.text}")
     resp.raise_for_status()
 
@@ -135,11 +149,13 @@ async def get_service_alerts(service: str) -> list[DatadogAlert]:
             continue
 
         mon_query = mon.get("query", "")
-        if service not in mon_query and f"service:{service}" not in mon_query:
+        tags = mon.get("tags", []) or []
+        if service not in mon_query and f"service:{service}" not in tags and f"service:{service}" not in mon_query:
             continue
 
         last_triggered = mon.get("last_triggered_ts")
-        triggered_at = str(last_triggered) if last_triggered else ""
+        triggered_at = to_utc_iso(last_triggered) if last_triggered else ""
+        thresholds = mon.get("options", {}).get("thresholds", {}) or {}
 
         alerts.append(DatadogAlert(
             id=str(mon.get("id", "")),
@@ -150,7 +166,7 @@ async def get_service_alerts(service: str) -> list[DatadogAlert]:
             query=mon_query,
             triggered_at=triggered_at,
             value=0.0,
-            threshold=float(mon.get("options", {}).get("thresholds", {}).get("critical", 0)),
+            threshold=float(thresholds.get("critical", thresholds.get("warning", 0)) or 0),
         ))
 
     return alerts
@@ -160,7 +176,8 @@ def _detect_anomaly(values: list[float]) -> bool:
     if len(values) < 3:
         return False
     recent = values[-1]
-    mean = sum(values[:-1]) / len(values[:-1])
+    baseline = values[:-1]
+    mean = sum(baseline) / len(baseline)
     if mean == 0:
         return recent > 1.0
     ratio = recent / mean
@@ -170,7 +187,7 @@ def _detect_anomaly(values: list[float]) -> bool:
 def _window_to_from_ts(window: str) -> int:
     import time
     now = int(time.time())
-    unit = window[-1]
+    unit = window[-1:] or "h"
     try:
         value = int(window[:-1])
     except ValueError:

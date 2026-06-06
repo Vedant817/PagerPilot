@@ -1,12 +1,9 @@
 import logging
-from datetime import datetime, timezone
-from schema.evidence import (
-    IncidentEvidence, IncidentBrief, RootCauseHypothesis, Source, ServiceImpact,
-)
-from backend.agents.base import BaseAgent, AgentResult
-from backend.config import (
-    dependency_graph_for_service, blast_radius_for_hypothesis,
-)
+
+from backend.agents.base import AgentResult, BaseAgent
+from backend.config import blast_radius_for_hypothesis, dependency_graph_for_service
+from backend.timeutils import timestamp_sort_key, utc_now_iso
+from schema.evidence import IncidentBrief, IncidentEvidence, RootCauseHypothesis, ServiceImpact, Source
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +14,10 @@ def _build_recommended_action(
     context: dict,
 ) -> str:
     if not hypotheses:
-        return "Insufficient evidence. Review service logs and metrics manually."
+        return "1. Insufficient evidence. Review service logs and metrics manually."
 
     top = hypotheses[0]
     title_lower = top.title.lower()
-    actions = []
     service = evidence.incident.service
 
     deploy_keywords = ["deploy", "regression", "rollback", "rollout", "canary"]
@@ -30,48 +26,44 @@ def _build_recommended_action(
 
     if any(kw in title_lower for kw in deploy_keywords):
         actions = [
-            f"1. Rollback the most recent deploy to {service}",
-            "2. Verify error rates return to baseline after rollback",
-            "3. Review changed files in the deploy for the root cause",
-            "4. Notify the team via Slack #sre-review",
+            f"Rollback or pause the most recent deploy to {service}",
+            "Verify error rates and latency return to baseline after mitigation",
+            "Review changed files in the deploy for the exact regression",
+            "Notify the incident channel with the suspected deploy SHA and owner",
         ]
     elif any(kw in title_lower for kw in dependency_keywords):
         actions = [
-            "1. Confirm third-party status page for ETA on resolution",
-            "2. If available, fail over to secondary provider",
-            "3. Update incident with external dependency reference",
-            "4. Monitor for automatic recovery",
+            "Confirm the third-party status page and capture incident reference/ETA",
+            "Fail over to a secondary provider or degraded mode if available",
+            "Update the customer-facing incident with the external dependency reference",
+            "Monitor dependency recovery and retry backlog drain",
         ]
     elif any(kw in title_lower for kw in db_keywords):
         actions = [
-            "1. Scale up database connection pool",
-            "2. Identify and kill long-running queries",
-            "3. Consider read replicas for query load",
-            "4. Set up connection pool monitoring alert",
+            "Scale database connection capacity or reduce pool pressure immediately",
+            "Identify long-running queries and high-cardinality callers",
+            "Temporarily shed non-critical traffic or background jobs if queues grow",
+            "Add or tune connection pool saturation alerts after mitigation",
         ]
     else:
         actions = [
-            f"1. Investigate {service} logs for error patterns",
-            "2. Check recent configuration changes",
-            "3. Review if traffic spike correlates with incident",
-            "4. Engage on-call engineer for deep dive",
+            f"Investigate {service} logs for repeated error signatures",
+            "Check recent configuration and feature-flag changes",
+            "Review traffic spikes and dependency latency during the incident window",
+            "Engage the owning on-call engineer for service-specific triage",
         ]
 
     recent_deploys = [e for e in evidence.github_events if e.type == "deploy"]
     status_outages = [s for s in evidence.status_events if s.incident]
 
     if recent_deploys:
-        actions.append(
-            f"5. Review deploy {recent_deploys[0].sha[:8] if recent_deploys[0].sha else 'details'}: "
-            f"{recent_deploys[0].title}"
-        )
-    if status_outages:
-        for outage in status_outages:
-            actions.append(
-                f"5. Check {outage.service} status: {outage.status}"
-            )
+        deploy = recent_deploys[0]
+        sha = deploy.sha[:8] if deploy.sha else "unknown-sha"
+        actions.append(f"Review deploy {sha}: {deploy.title}")
+    for outage in status_outages:
+        actions.append(f"Track {outage.service} status until it returns to operational")
 
-    return "\n".join(actions[:6])
+    return "\n".join(f"{idx}. {action}" for idx, action in enumerate(actions[:6], start=1))
 
 
 class ReporterAgent(BaseAgent):
@@ -88,13 +80,11 @@ class ReporterAgent(BaseAgent):
 
         context["brief"] = brief
 
-        logger.info(
-            f"ReporterAgent: generated incident brief for {evidence.incident.id}"
-        )
+        logger.info("ReporterAgent: generated incident brief for %s", evidence.incident.id)
 
         return AgentResult(True, data={
             "brief": brief,
-            "brief_id": f"brief-{evidence.incident.id}-{int(datetime.now(timezone.utc).timestamp())}",
+            "brief_id": f"brief-{evidence.incident.id}-{utc_now_iso()}",
         })
 
     def _generate_brief(
@@ -107,38 +97,39 @@ class ReporterAgent(BaseAgent):
         timeline = self._build_timeline(evidence)
 
         top_hypothesis = hypotheses[0] if hypotheses else None
-        recommended_action = _build_recommended_action(
-            evidence, hypotheses, context
-        )
+        recommended_action = _build_recommended_action(evidence, hypotheses, context)
         service_impact = self._compute_service_impact(evidence, context)
 
-        sources_used = set()
+        sources_used = {Source.PAGERDUTY}
         if evidence.metrics or evidence.alerts:
             sources_used.add(Source.DATADOG)
         if evidence.github_events:
             sources_used.add(Source.GITHUB)
         if evidence.status_events:
             sources_used.add(Source.STATUSGATOR)
-        sources_used.add(Source.PAGERDUTY)
+        source_order = [Source.PAGERDUTY, Source.DATADOG, Source.GITHUB, Source.STATUSGATOR]
 
-        confidence = 0.5
-        if top_hypothesis:
-            confidence = top_hypothesis.confidence
+        confidence = top_hypothesis.confidence if top_hypothesis else 0.5
+        generated_at = utc_now_iso()
 
         summary_parts = [
-            f"Incident **{inc.id}** on **{inc.service}** "
-            f"({inc.severity.value.upper()})",
+            f"Incident **{inc.id}** on **{inc.service}** ({inc.severity.value.upper()})",
             f"Status: {inc.status}",
-            f"Generated at: {inc.created_at}",
+            f"Triggered at: {inc.created_at}",
+            f"Brief generated at: {generated_at}",
         ]
 
         if hypotheses:
             top = hypotheses[0]
             summary_parts.append(f"**Top hypothesis (confidence {top.confidence:.0%}):** {top.title}")
-            summary_parts.append(top.description[:200])
+            summary_parts.append(top.description[:240])
 
         if evidence.correlation_notes:
             summary_parts.append(f"**Signals:** {'; '.join(evidence.correlation_notes[:3])}")
+
+        fetch_errors = context.get("fetch_errors", [])
+        if fetch_errors:
+            summary_parts.append(f"**Caveat:** {len(fetch_errors)} source call(s) failed; confidence may be lower.")
 
         return IncidentBrief(
             incident_id=inc.id,
@@ -150,8 +141,8 @@ class ReporterAgent(BaseAgent):
             timeline=timeline,
             root_cause_hypotheses=hypotheses,
             recommended_action=recommended_action,
-            evidence_sources=list(sources_used),
-            generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            evidence_sources=[s for s in source_order if s in sources_used],
+            generated_at=generated_at,
             confidence_score=confidence,
             service_impact=service_impact,
         )
@@ -186,7 +177,7 @@ class ReporterAgent(BaseAgent):
                 "event": f"Status: {se.service} - {se.status}",
             })
 
-        events.sort(key=lambda e: e["time"])
+        events.sort(key=lambda e: timestamp_sort_key(e.get("time")))
         return events
 
     def _compute_service_impact(
@@ -201,7 +192,7 @@ class ReporterAgent(BaseAgent):
         status_outages = [s for s in evidence.status_events if s.incident]
         impacted_external = [
             d for d in external_deps
-            if any(s.service == d for s in status_outages)
+            if any(s.service.lower() == d.lower() for s in status_outages)
         ]
 
         hypotheses = context.get("hypotheses", [])
@@ -211,9 +202,9 @@ class ReporterAgent(BaseAgent):
 
         return ServiceImpact(
             affected_service=service,
-            downstream_services=deps["downstream"],
-            external_dependencies_impacted=impacted_external or external_deps,
-            customer_facing=deps["customer_facing"],
+            downstream_services=deps.get("downstream", []),
+            external_dependencies_impacted=impacted_external,
+            customer_facing=bool(deps.get("customer_facing", True)),
             estimated_blast_percentage=blast_pct,
-            affected_endpoints=deps["endpoints"],
+            affected_endpoints=deps.get("endpoints", []),
         )

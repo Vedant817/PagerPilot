@@ -1,11 +1,10 @@
 import logging
-from typing import Optional
 
 import httpx
 
+from backend.config import GITHUB_BASE_URL, GITHUB_TOKEN, has_github, repo_for_service
 from schema.evidence import GitHubEvent
 from .base import NonRetryableError, RetryableError, get_http_client
-from backend.config import has_github, GITHUB_TOKEN, GITHUB_BASE_URL, repo_for_service
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +21,12 @@ async def get_recent_deploys(service: str, window: str = "24h") -> list[GitHubEv
     if not service:
         raise NonRetryableError("service is required")
     if not has_github():
-        logger.warning(f"GitHub not configured, returning empty deploys for {service}")
+        logger.warning("GitHub not configured, returning empty deploys for %s", service)
         return []
 
     repo = repo_for_service(service)
+    if not repo:
+        return []
     client = await get_http_client()
     url = f"{GITHUB_BASE_URL}/repos/{repo}/deployments"
 
@@ -37,9 +38,11 @@ async def get_recent_deploys(service: str, window: str = "24h") -> list[GitHubEv
 
     resp = await client.get(url, headers=_headers(), params=params)
     if resp.status_code == 403:
+        if _is_rate_limited(resp):
+            raise RetryableError(f"GitHub rate limited: {resp.text}")
         raise NonRetryableError(f"GitHub auth failed: {resp.text}")
     if resp.status_code == 404:
-        logger.warning(f"Repo {repo} not found")
+        logger.warning("Repo %s not found", repo)
         return []
     if resp.status_code == 429:
         raise RetryableError(f"GitHub rate limited: {resp.text}")
@@ -53,7 +56,6 @@ async def get_recent_deploys(service: str, window: str = "24h") -> list[GitHubEv
         created_at = dep.get("created_at", "")
         description = dep.get("description") or ""
         environment = dep.get("environment", "production")
-
         creator = dep.get("creator", {}) or {}
         author = creator.get("login", "deploy-bot")
 
@@ -74,10 +76,12 @@ async def get_prs_and_commits(service: str, window: str = "72h") -> list[GitHubE
     if not service:
         raise NonRetryableError("service is required")
     if not has_github():
-        logger.warning(f"GitHub not configured, returning empty events for {service}")
+        logger.warning("GitHub not configured, returning empty events for %s", service)
         return []
 
     repo = repo_for_service(service)
+    if not repo:
+        return []
     client = await get_http_client()
     events: list[GitHubEvent] = []
 
@@ -100,8 +104,10 @@ async def _fetch_recent_prs(client: httpx.AsyncClient, repo: str) -> list[GitHub
     }
 
     resp = await client.get(url, headers=_headers(), params=params)
+    if resp.status_code == 403 and _is_rate_limited(resp):
+        raise RetryableError(f"GitHub rate limited: {resp.text}")
     if resp.status_code != 200:
-        logger.warning(f"Failed to fetch PRs for {repo}: {resp.status_code}")
+        logger.warning("Failed to fetch PRs for %s: %s", repo, resp.status_code)
         return []
 
     prs = resp.json()
@@ -114,6 +120,7 @@ async def _fetch_recent_prs(client: httpx.AsyncClient, repo: str) -> list[GitHub
         pr_number = pr.get("number", 0)
         updated_at = pr.get("updated_at", "")
         body = pr.get("body") or ""
+        head = pr.get("head") or {}
 
         events.append(GitHubEvent(
             type="pr",
@@ -121,7 +128,7 @@ async def _fetch_recent_prs(client: httpx.AsyncClient, repo: str) -> list[GitHub
             title=title,
             author=author,
             timestamp=updated_at,
-            sha=pr.get("head", {}).get("sha", "") if pr.get("head") else "",
+            sha=head.get("sha", ""),
             pr_number=pr_number,
             description=body[:500] if body else "",
         ))
@@ -138,8 +145,10 @@ async def _fetch_recent_commits(client: httpx.AsyncClient, repo: str) -> list[Gi
     }
 
     resp = await client.get(url, headers=_headers(), params=params)
+    if resp.status_code == 403 and _is_rate_limited(resp):
+        raise RetryableError(f"GitHub rate limited: {resp.text}")
     if resp.status_code != 200:
-        logger.warning(f"Failed to fetch commits for {repo}: {resp.status_code}")
+        logger.warning("Failed to fetch commits for %s: %s", repo, resp.status_code)
         return []
 
     commits = resp.json()
@@ -164,3 +173,11 @@ async def _fetch_recent_commits(client: httpx.AsyncClient, repo: str) -> list[Gi
         ))
 
     return events
+
+
+def _is_rate_limited(resp: httpx.Response) -> bool:
+    remaining = resp.headers.get("x-ratelimit-remaining")
+    if remaining == "0":
+        return True
+    text = resp.text.lower()
+    return "rate limit" in text or "secondary rate" in text

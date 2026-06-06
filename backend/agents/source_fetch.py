@@ -45,6 +45,10 @@ class SourceFetchAgent(BaseAgent):
             await asyncio.gather(*tasks)
 
         evidence.correlation_notes = self._generate_correlation_notes(evidence)
+        if errors:
+            evidence.correlation_notes.append(
+                f"Partial source fetch: {len(errors)} connector call(s) failed"
+            )
 
         context["evidence"] = evidence
         context["fetch_errors"] = errors

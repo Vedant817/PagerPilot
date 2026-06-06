@@ -1,8 +1,9 @@
 import logging
-from schema.evidence import PagerDutyIncident, Severity, Source
-from backend.agents.base import BaseAgent, AgentResult
+
+from backend.agents.base import AgentResult, BaseAgent
+from backend.config import external_deps_for_service, has_datadog, has_github, has_statusgator
 from backend.connectors import pagerduty
-from backend.config import has_pagerduty, has_datadog, has_github, has_statusgator, external_deps_for_service
+from schema.evidence import PagerDutyIncident
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class RouterAgent(BaseAgent):
         try:
             incident = await pagerduty.get_incident(incident_id)
         except Exception as e:
-            logger.error(f"Failed to fetch PagerDuty incident {incident_id}: {e}")
+            logger.error("Failed to fetch PagerDuty incident %s: %s", incident_id, e)
             return AgentResult(False, error=f"Failed to fetch incident: {e}")
 
         if incident is None:
@@ -33,12 +34,14 @@ class RouterAgent(BaseAgent):
         context["route"] = {
             "fetch_datadog": has_datadog(),
             "fetch_github": has_github(),
-            "fetch_statusgator": has_statusgator(),
+            "fetch_statusgator": bool(external_deps) and has_statusgator(),
         }
 
         logger.info(
-            f"RouterAgent: routed incident {incident_id} "
-            f"to services {source_services}, deps {external_deps}"
+            "RouterAgent: routed incident %s to services %s, deps %s",
+            incident_id,
+            source_services,
+            external_deps,
         )
 
         return AgentResult(True, data={

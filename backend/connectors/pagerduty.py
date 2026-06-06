@@ -2,14 +2,13 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-import httpx
-
 from schema.evidence import PagerDutyIncident, Severity
-from .base import (
-    NonRetryableError, ConnectorError, get_http_client,
-)
+from .base import NonRetryableError, get_http_client
 from backend.config import (
-    has_pagerduty, PAGERDUTY_API_KEY, PAGERDUTY_FROM_EMAIL, PAGERDUTY_BASE_URL,
+    PAGERDUTY_API_KEY,
+    PAGERDUTY_BASE_URL,
+    PAGERDUTY_FROM_EMAIL,
+    has_pagerduty,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,9 +75,9 @@ async def _real_get_incident(incident_id: str) -> Optional[PagerDutyIncident]:
 
 async def _real_list_incidents(service: Optional[str] = None) -> list[dict]:
     client = await get_http_client()
+    # PagerDuty filters by service_ids[], not service names. Fetch recent incidents and
+    # apply the optional human-readable service-name filter locally.
     params: dict = {"limit": 25, "statuses[]": ["triggered", "acknowledged"]}
-    if service:
-        params["service_name"] = service
     url = f"{PAGERDUTY_BASE_URL}/incidents"
     resp = await client.get(url, headers=_headers(), params=params)
     if resp.status_code == 429:
@@ -89,6 +88,8 @@ async def _real_list_incidents(service: Optional[str] = None) -> list[dict]:
     results = []
     for inc in data.get("incidents", []):
         svc = inc.get("service", {}).get("summary", "")
+        if service and svc != service:
+            continue
         sev = SEVERITY_MAP.get(inc.get("urgency", "critical"), Severity.CRITICAL)
         results.append({
             "id": inc.get("id", ""),
@@ -162,8 +163,8 @@ async def get_incident(incident_id: str) -> Optional[PagerDutyIncident]:
             if result:
                 return result
         except Exception as e:
-            logger.warning(f"PagerDuty real API failed, falling back to mock: {e}")
-    return MOCK_INCIDENTS.get(incident_id)
+            logger.warning("PagerDuty real API failed, falling back to local incident catalog: %s", e)
+    return MOCK_INCIDENTS.get(incident_id) or MOCK_INCIDENTS.get(incident_id.upper())
 
 
 async def list_incidents(service: Optional[str] = None) -> list[dict]:
@@ -171,8 +172,9 @@ async def list_incidents(service: Optional[str] = None) -> list[dict]:
         try:
             return await _real_list_incidents(service)
         except Exception as e:
-            logger.warning(f"PagerDuty list real API failed, falling back to mock: {e}")
-    incidents = MOCK_INCIDENTS.values()
+            logger.warning("PagerDuty list real API failed, falling back to local incident catalog: %s", e)
+
+    incidents = list(MOCK_INCIDENTS.values())
     if service:
         incidents = [i for i in incidents if i.service == service]
     return [

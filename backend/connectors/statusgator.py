@@ -1,11 +1,9 @@
 import logging
 from typing import Optional
 
-import httpx
-
+from backend.config import STATUSGATOR_API_KEY, STATUSGATOR_BASE_URL, has_statusgator
 from schema.evidence import StatusGatorEvent
 from .base import NonRetryableError, RetryableError, get_http_client
-from backend.config import has_statusgator, STATUSGATOR_API_KEY, STATUSGATOR_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +19,7 @@ async def get_service_status(service_name: str) -> Optional[StatusGatorEvent]:
     if not service_name:
         raise NonRetryableError("service_name is required")
     if not has_statusgator():
-        logger.warning(f"StatusGator not configured, returning None for {service_name}")
+        logger.warning("StatusGator not configured, returning None for %s", service_name)
         return None
 
     components = await _fetch_all_components()
@@ -29,7 +27,7 @@ async def get_service_status(service_name: str) -> Optional[StatusGatorEvent]:
         if comp.service.lower() == service_name.lower():
             return comp
 
-    logger.warning(f"Status not found for service: {service_name}")
+    logger.warning("Status not found for service: %s", service_name)
     return None
 
 
@@ -48,10 +46,10 @@ async def _fetch_all_components() -> list[StatusGatorEvent]:
     resp = await client.get(url, headers=_headers())
     if resp.status_code == 429:
         raise RetryableError(f"StatusGator rate limited: {resp.text}")
-    if resp.status_code == 403:
+    if resp.status_code in (401, 403):
         raise NonRetryableError(f"StatusGator auth failed: {resp.text}")
     if resp.status_code != 200:
-        logger.warning(f"StatusGator returned {resp.status_code}")
+        logger.warning("StatusGator returned %s", resp.status_code)
         return []
 
     data = resp.json()
@@ -63,11 +61,15 @@ async def _fetch_all_components() -> list[StatusGatorEvent]:
         status = comp.get("status", comp.get("status_label", "unknown"))
         description = comp.get("description", comp.get("status_description", ""))
         last_updated = comp.get("updated_at", comp.get("last_updated", ""))
-        incident = comp.get("incident", False) or status.lower() not in ("operational", "active", "none")
+        incident = bool(comp.get("incident", False)) or status.lower() not in (
+            "operational", "active", "none", "ok"
+        )
 
         affected = comp.get("affected_components", comp.get("components", []))
         if isinstance(affected, list):
             affected = [a.get("name", str(a)) if isinstance(a, dict) else str(a) for a in affected]
+        else:
+            affected = []
 
         events.append(StatusGatorEvent(
             service=name,
