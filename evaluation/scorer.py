@@ -1,8 +1,15 @@
 import logging
+import sys
 
 from evaluation.golden_incidents import GOLDEN_INCIDENTS
 from backend.orchestrator import AgentGraph
 from backend.session import SessionManager
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (TypeError, ValueError):
+        pass
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger("evaluator")
