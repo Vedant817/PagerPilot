@@ -1,4 +1,4 @@
-edition = 4
+edition = 3
 
 [agent]
 name = "pagerpilot-sre-investigator"
